@@ -80,8 +80,8 @@
                 return;
             }
             
-            const text = rawInput.value.trim();
-            if (!text) {
+            const text = rawInput.value;
+            if (!text || !text.trim()) {
                 showToast("Please paste some text first.");
                 return;
             }
@@ -89,13 +89,14 @@
             // Hardcoded India country code
             const countryCode = "91";
             
-            // Refined Regex: Looks for strings of digits that are likely phone numbers.
-            // Matches 10-12 digit sequences, potentially starting with '+' or having separators.
-            const phoneRegex = /(?:\+?91|0)?[6-9]\d{9}|(?:\+?91|0)?\s?\d{5}\s?\d{5}/g;
+            // Refined Regex: Looks for sequences that resemble Indian mobile numbers.
+            // Matches 10 digits starting with 6-9, optionally preceded by +91, 91, or 0,
+            // and allows common separators like spaces, dashes, or dots between digits.
+            const phoneRegex = /(?:\+?91|0)?\s?[6-9](?:[\s\-\.\(\)]?\d){9}\b/g;
             const matches = text.match(phoneRegex) || [];
             
             if (matches.length === 0) {
-                showToast("No valid numbers found. Ensure they are 10 digits.");
+                showToast("No valid 10-digit mobile numbers found (starting with 6-9).");
                 return;
             }
 
@@ -106,18 +107,19 @@
             matches.forEach(num => {
                 let cleaned = num.replace(/\D/g, '');
                 
-                // If it starts with 0 (Indian local prefix), remove it
-                if (cleaned.startsWith('0')) {
+                // If it starts with 0 (Indian local prefix) and is longer than 10 digits, remove the 0
+                if (cleaned.startsWith('0') && cleaned.length > 10) {
                     cleaned = cleaned.substring(1);
                 }
 
-                // If it's 10 digits, it's a local number, add prefix
+                // If it's a standard 10 digit number, add the 91 prefix
                 if (cleaned.length === 10) {
                     cleaned = countryCode + cleaned;
                 }
                 
                 // Final validation: must be exactly 12 digits (91 + 10 digits)
                 if (cleaned.length === 12 && cleaned.startsWith(countryCode)) {
+                    // Check if already in the list to avoid duplicate database entries
                     const exists = extractedNumbers.some(item => item.formatted === cleaned);
                     if (!exists) {
                         const newDocRef = doc(userNumbersCol); 
@@ -133,11 +135,15 @@
             });
 
             if (addedCount > 0) {
-                await batch.commit();
-                rawInput.value = '';
-                showToast(`Added ${addedCount} new numbers!`);
+                try {
+                    await batch.commit();
+                    rawInput.value = '';
+                    showToast(`Successfully added ${addedCount} new numbers!`);
+                } catch (e) {
+                    showToast("Error saving to database. Please try again.");
+                }
             } else {
-                showToast("Numbers already exist in your list.");
+                showToast("All identified numbers are already in your list.");
             }
         };
 
@@ -253,7 +259,7 @@
                 <button onclick="window.extractNumbers()" class="w-full whatsapp-green hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md">
                     Add Numbers to List (India)
                 </button>
-                <p class="text-[10px] text-center text-gray-400">Supports 10-digit mobile numbers with or without +91 prefix.</p>
+                <p class="text-[10px] text-center text-gray-400">Supports 10-digit mobile numbers with or without separators/prefixes.</p>
             </div>
 
             <!-- Message Configuration -->
