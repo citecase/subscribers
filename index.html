@@ -80,45 +80,65 @@
                 return;
             }
             
-            const text = rawInput.value;
+            const text = rawInput.value.trim();
+            if (!text) {
+                showToast("Please paste some text first.");
+                return;
+            }
+
             // Hardcoded India country code
             const countryCode = "91";
-            const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4,9}/g;
+            
+            // Refined Regex: Looks for strings of digits that are likely phone numbers.
+            // Matches 10-12 digit sequences, potentially starting with '+' or having separators.
+            const phoneRegex = /(?:\+?91|0)?[6-9]\d{9}|(?:\+?91|0)?\s?\d{5}\s?\d{5}/g;
             const matches = text.match(phoneRegex) || [];
             
             if (matches.length === 0) {
-                showToast("No numbers found in the text.");
+                showToast("No valid numbers found. Ensure they are 10 digits.");
                 return;
             }
 
             const batch = writeBatch(db);
             const userNumbersCol = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'numbers');
+            let addedCount = 0;
 
             matches.forEach(num => {
                 let cleaned = num.replace(/\D/g, '');
-                // Handle logic: if it's a 10 digit number, prepend 91. 
-                // If it starts with 91 and is 12 digits, leave it.
+                
+                // If it starts with 0 (Indian local prefix), remove it
+                if (cleaned.startsWith('0')) {
+                    cleaned = cleaned.substring(1);
+                }
+
+                // If it's 10 digits, it's a local number, add prefix
                 if (cleaned.length === 10) {
                     cleaned = countryCode + cleaned;
                 }
                 
-                if (cleaned.length >= 10) {
+                // Final validation: must be exactly 12 digits (91 + 10 digits)
+                if (cleaned.length === 12 && cleaned.startsWith(countryCode)) {
                     const exists = extractedNumbers.some(item => item.formatted === cleaned);
                     if (!exists) {
                         const newDocRef = doc(userNumbersCol); 
                         batch.set(newDocRef, {
-                            original: num,
+                            original: num.trim(),
                             formatted: cleaned,
                             sent: false,
                             createdAt: Date.now()
                         });
+                        addedCount++;
                     }
                 }
             });
 
-            await batch.commit();
-            rawInput.value = '';
-            showToast("Added to list!");
+            if (addedCount > 0) {
+                await batch.commit();
+                rawInput.value = '';
+                showToast(`Added ${addedCount} new numbers!`);
+            } else {
+                showToast("Numbers already exist in your list.");
+            }
         };
 
         window.sendWhatsApp = (id, formatted) => {
@@ -233,7 +253,7 @@
                 <button onclick="window.extractNumbers()" class="w-full whatsapp-green hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md">
                     Add Numbers to List (India)
                 </button>
-                <p class="text-[10px] text-center text-gray-400">Numbers without country codes will automatically use +91.</p>
+                <p class="text-[10px] text-center text-gray-400">Supports 10-digit mobile numbers with or without +91 prefix.</p>
             </div>
 
             <!-- Message Configuration -->
