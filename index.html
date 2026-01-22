@@ -11,7 +11,7 @@
         import { getAuth, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, collection, query, onSnapshot, addDoc, updateDoc, deleteDoc, writeBatch } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Firebase Configuration
+        // Firebase Configuration from environment
         const firebaseConfig = JSON.parse(__firebase_config);
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
@@ -23,7 +23,6 @@
 
         // UI Selectors
         const rawInput = document.getElementById('rawInput');
-        const countryCodeInput = document.getElementById('countryCode');
         const messageTemplate = document.getElementById('messageTemplate');
         const numberTableBody = document.getElementById('numberTableBody');
         const resultsArea = document.getElementById('resultsArea');
@@ -48,6 +47,7 @@
                 }
             } catch (error) {
                 console.error("Auth error:", error);
+                showToast("Connection error. Please refresh.");
             }
         };
 
@@ -61,10 +61,7 @@
         // --- FIRESTORE OPERATIONS ---
         function setupFirestoreListener() {
             if (!currentUser) return;
-            
-            // Path: /artifacts/{appId}/users/{userId}/numbers
             const q = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'numbers');
-            
             onSnapshot(q, (snapshot) => {
                 extractedNumbers = snapshot.docs.map(doc => ({
                     id: doc.id,
@@ -76,25 +73,36 @@
             });
         }
 
+        // --- GLOBAL EXPORTS FOR HTML ONCLICK ---
         window.extractNumbers = async () => {
-            if (!currentUser) return;
+            if (!currentUser) {
+                showToast("Connecting to server...");
+                return;
+            }
             
             const text = rawInput.value;
-            const countryCode = countryCodeInput.value.replace(/\D/g, '');
+            // Hardcoded India country code
+            const countryCode = "91";
             const phoneRegex = /(?:\+?\d{1,3}[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4,9}/g;
             const matches = text.match(phoneRegex) || [];
             
+            if (matches.length === 0) {
+                showToast("No numbers found in the text.");
+                return;
+            }
+
             const batch = writeBatch(db);
             const userNumbersCol = collection(db, 'artifacts', appId, 'users', currentUser.uid, 'numbers');
 
             matches.forEach(num => {
                 let cleaned = num.replace(/\D/g, '');
-                if (cleaned.length <= 10 && countryCode) {
+                // Handle logic: if it's a 10 digit number, prepend 91. 
+                // If it starts with 91 and is 12 digits, leave it.
+                if (cleaned.length === 10) {
                     cleaned = countryCode + cleaned;
                 }
                 
-                if (cleaned.length >= 7) {
-                    // Check if already in list to avoid duplicates
+                if (cleaned.length >= 10) {
                     const exists = extractedNumbers.some(item => item.formatted === cleaned);
                     if (!exists) {
                         const newDocRef = doc(userNumbersCol); 
@@ -110,24 +118,31 @@
 
             await batch.commit();
             rawInput.value = '';
-            showToast("Numbers extracted and saved!");
+            showToast("Added to list!");
         };
 
-        window.sendWhatsApp = async (id, formatted) => {
+        window.sendWhatsApp = (id, formatted) => {
+            if (!currentUser) return;
+            
             const message = encodeURIComponent(messageTemplate.value);
             const url = `https://wa.me/${formatted}?text=${message}`;
             
-            // Mark as sent in DB
-            const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'numbers', id);
-            await updateDoc(docRef, { sent: true });
+            const newWindow = window.open(url, '_blank');
 
-            window.open(url, '_blank');
+            if (!newWindow || newWindow.closed || typeof newWindow.closed === 'undefined') {
+                showToast("Popup blocked! Please allow popups for this site.");
+                return;
+            }
+
+            const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'numbers', id);
+            updateDoc(docRef, { sent: true }).catch(err => console.error("Update failed", err));
         };
 
         window.deleteEntry = async (id) => {
             if (!currentUser) return;
             const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'numbers', id);
             await deleteDoc(docRef);
+            showToast("Entry removed.");
         };
 
         window.sendAllRemaining = () => {
@@ -135,13 +150,13 @@
             if (nextItem) {
                 window.sendWhatsApp(nextItem.id, nextItem.formatted);
             } else {
-                showToast("All numbers in this list have been processed!");
+                showToast("All numbers processed!");
             }
         };
 
         window.clearAll = async () => {
             if (!currentUser || extractedNumbers.length === 0) return;
-            if (confirm("This will permanently delete ALL entries in your list. Proceed?")) {
+            if (confirm("Delete all saved numbers?")) {
                 const batch = writeBatch(db);
                 extractedNumbers.forEach(item => {
                     const docRef = doc(db, 'artifacts', appId, 'users', currentUser.uid, 'numbers', item.id);
@@ -152,7 +167,6 @@
             }
         };
 
-        // --- UI RENDERING ---
         function renderTable() {
             if (extractedNumbers.length === 0) {
                 resultsArea.classList.add('hidden');
@@ -163,7 +177,6 @@
             countDisplay.innerText = extractedNumbers.length;
             numberTableBody.innerHTML = '';
 
-            // Simple sort by creation date (newest last or as extracted)
             const sorted = [...extractedNumbers].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
 
             sorted.forEach((item) => {
@@ -172,14 +185,14 @@
                 tr.innerHTML = `
                     <td class="px-4 py-3 text-sm text-gray-800 font-medium">
                         ${item.original}
-                        ${item.sent ? '<span class="ml-2 text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded uppercase tracking-wider font-bold">Processed</span>' : ''}
+                        ${item.sent ? '<span class="ml-2 text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded uppercase tracking-wider font-bold">Sent</span>' : ''}
                     </td>
                     <td class="px-4 py-3 text-sm text-gray-500 font-mono">${item.formatted}</td>
                     <td class="px-4 py-3 text-right flex justify-end space-x-2">
-                        <button onclick="sendWhatsApp('${item.id}', '${item.formatted}')" class="${item.sent ? 'bg-gray-200 text-gray-600' : 'bg-green-500 text-white hover:bg-green-600'} text-xs px-3 py-1.5 rounded transition font-semibold">
-                            ${item.sent ? 'Resend' : 'Send Now'}
+                        <button onclick="window.sendWhatsApp('${item.id}', '${item.formatted}')" class="${item.sent ? 'bg-gray-200 text-gray-600' : 'bg-green-500 text-white hover:bg-green-600'} text-xs px-3 py-1.5 rounded transition font-semibold">
+                            ${item.sent ? 'Resend' : 'Send'}
                         </button>
-                        <button onclick="deleteEntry('${item.id}')" class="bg-white border border-red-200 text-red-500 hover:bg-red-50 text-xs px-3 py-1.5 rounded transition">
+                        <button onclick="window.deleteEntry('${item.id}')" class="bg-white border border-red-200 text-red-500 hover:bg-red-50 text-xs px-3 py-1.5 rounded transition">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
                         </button>
                     </td>
@@ -188,9 +201,7 @@
             });
         }
 
-        // Run Auth
         initAuth();
-
     </script>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
@@ -219,18 +230,10 @@
                 </h2>
                 <textarea id="rawInput" class="w-full h-48 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent resize-none" placeholder="Paste your text or list here..."></textarea>
                 
-                <div class="flex space-x-2">
-                    <div class="flex-1">
-                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">Default Country Code</label>
-                        <input type="text" id="countryCode" value="91" class="w-full p-2 border border-gray-300 rounded-lg">
-                    </div>
-                    <div class="flex-[2]">
-                        <label class="block text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">&nbsp;</label>
-                        <button onclick="extractNumbers()" class="w-full whatsapp-green hover:bg-green-600 text-white font-bold py-2 px-4 rounded-lg transition duration-200">
-                            Add to List
-                        </button>
-                    </div>
-                </div>
+                <button onclick="window.extractNumbers()" class="w-full whatsapp-green hover:bg-green-600 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md">
+                    Add Numbers to List (India)
+                </button>
+                <p class="text-[10px] text-center text-gray-400">Numbers without country codes will automatically use +91.</p>
             </div>
 
             <!-- Message Configuration -->
@@ -240,7 +243,7 @@
                     Message Template
                 </h2>
                 <textarea id="messageTemplate" class="w-full h-48 p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-none">Hello, This is from citecase.in. We just want to know whether you are interested in renewing our subscription. Awaiting your response.</textarea>
-                <p class="text-[10px] text-gray-400">Template is stored in-memory. Leads are stored in your private database.</p>
+                <p class="text-[10px] text-gray-400">If sending doesn't work, ensure your browser isn't blocking popups.</p>
             </div>
         </div>
 
@@ -250,7 +253,7 @@
                 <h2 class="text-xl font-semibold text-gray-700">
                     Saved Lead List (<span id="count">0</span>)
                 </h2>
-                <button onclick="clearAll()" class="text-xs text-red-500 hover:text-red-700 font-semibold uppercase tracking-widest">Delete Entire List</button>
+                <button onclick="window.clearAll()" class="text-xs text-red-500 hover:text-red-700 font-semibold uppercase tracking-widest">Delete Entire List</button>
             </div>
             
             <div class="overflow-x-auto">
@@ -267,7 +270,7 @@
             </div>
 
             <div class="mt-6 flex justify-center">
-                <button onclick="sendAllRemaining()" class="whatsapp-dark hover:bg-black text-white px-8 py-3 rounded-full font-bold shadow-lg flex items-center space-x-2 transition transform hover:active:scale-95">
+                <button onclick="window.sendAllRemaining()" class="whatsapp-dark hover:bg-black text-white px-8 py-3 rounded-full font-bold shadow-lg flex items-center space-x-2 transition transform hover:active:scale-95">
                     <span>Process Next Number</span>
                     <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M.057 24l1.687-6.163c-1.041-1.804-1.588-3.849-1.587-5.946.003-6.556 5.338-11.891 11.893-11.891 3.181.001 6.167 1.24 8.413 3.488 2.246 2.248 3.484 5.237 3.483 8.42-.003 6.557-5.338 11.892-11.893 11.892-1.99-.001-3.951-.5-5.688-1.448l-6.308 1.654zm6.597-3.807c1.676.995 3.276 1.591 5.316 1.592 5.43.001 9.85-4.417 9.852-9.847.002-5.43-4.419-9.853-9.851-9.853-4.71 0-8.673 3.321-9.529 7.749-.104.536-.16 1.088-.16 1.65 0 1.902.535 3.737 1.549 5.334l-1.01 3.688 3.833-1.003z"/></svg>
                 </button>
@@ -275,9 +278,8 @@
         </div>
     </div>
 
-    <!-- UI Notification System -->
     <div id="toast" class="fixed bottom-5 right-5 whatsapp-dark text-white px-6 py-3 rounded-lg shadow-2xl transform translate-y-20 opacity-0 transition-all duration-300 pointer-events-none z-50">
-        Message status updated.
+        Syncing...
     </div>
 </body>
 </html>
